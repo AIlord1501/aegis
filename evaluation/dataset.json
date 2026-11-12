@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {"id": "database-timeout", "query": "payment API database timeout connection pool", "relevant_sources": ["runbooks/payments.md", "services/payments/db.py"]},
+    {"id": "queue-backlog", "query": "worker queue backlog Redis consumer lag", "relevant_sources": ["runbooks/queues.md", "workers/consumer.go"]},
+    {"id": "bad-deploy", "query": "checkout failures after deployment feature flag", "relevant_sources": ["deployments/rollback.md", "services/checkout/flags.py"]}
+  ],
+  "corpus": [
+    {"source": "runbooks/payments.md", "text": "Payment API database timeout runbook: inspect connection pool saturation and database latency."},
+    {"source": "services/payments/db.py", "text": "Payment database connection pool timeout and retry configuration."},
+    {"source": "runbooks/queues.md", "text": "Queue backlog runbook: inspect Redis consumer lag and worker throughput."},
+    {"source": "workers/consumer.go", "text": "Redis stream consumer workers process queue messages concurrently."},
+    {"source": "deployments/rollback.md", "text": "Rollback checkout deployments when failures begin after a release."},
+    {"source": "services/checkout/flags.py", "text": "Checkout feature flag evaluation and safe rollout controls."},
+    {"source": "docs/oncall.md", "text": "General incident response and escalation guidance."}
+  ]
+}

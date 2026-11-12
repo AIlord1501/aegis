@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_access_token
 from app.db.session import get_db
+from app.llm.service import LLMService
 from app.models.user import User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -31,3 +32,10 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)], db: Db
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+def get_llm_service() -> LLMService:
+    return LLMService()
+
+
+LLMDependency = Annotated[LLMService, Depends(get_llm_service)]

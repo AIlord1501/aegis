@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from app.api import auth, events, incidents, services
+from app.api import auth, events, incidents, intelligence, investigations, knowledge, repositories, services
 from app.core.config import get_settings
 from app.core.redis import redis_client
 from app.db.session import engine
@@ -13,6 +13,10 @@ app.include_router(auth.router)
 app.include_router(services.router)
 app.include_router(incidents.router)
 app.include_router(events.router)
+app.include_router(intelligence.router)
+app.include_router(knowledge.router)
+app.include_router(repositories.router)
+app.include_router(investigations.router)
 
 
 @app.middleware("http")
