@@ -1,0 +1,12 @@
+FROM golang:1.22 AS build
+WORKDIR /src
+COPY go.mod ./
+RUN go mod download
+COPY processor ./processor
+COPY cmd ./cmd
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/aegis-processor ./cmd/processor
+
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /out/aegis-processor /aegis-processor
+EXPOSE 8081
+ENTRYPOINT ["/aegis-processor"]
