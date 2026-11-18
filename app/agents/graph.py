@@ -5,11 +5,9 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.agents.tools import (
-    InspectCommitInput,
-    InspectFileInput,
     IncidentDetailsInput,
     KnowledgeSearchInput,
     PermittedTestsInput,
@@ -20,8 +18,6 @@ from app.agents.tools import (
     ToolContext,
     generate_remediation_plan,
     get_incident_details,
-    inspect_commit,
-    inspect_file,
     run_permitted_tests,
     search_knowledge,
     search_logs,
@@ -32,10 +28,8 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.llm.service import LLMService
 from app.llm.types import LLMError
-from app.models.incident import Incident
 from app.models.intelligence import InvestigationReport
 from app.models.investigation import AgentExecution, Approval, Investigation, InvestigationCheckpoint
-from app.models.service import Service
 
 
 class InvestigationState(TypedDict, total=False):
@@ -128,6 +122,12 @@ async def _run_agent_node(node_name: str, function, state: InvestigationState, s
                         execution.prompt_tokens = ctx.last_model_result.usage.prompt_tokens
                         execution.completion_tokens = ctx.last_model_result.usage.completion_tokens
                     break
+                except (LookupError, PermissionError) as exc:
+                    execution.retry_count = attempt
+                    execution.status = "failed"
+                    execution.error_message = str(exc)[:1000]
+                    result = {"agent_outputs": [{"agent": node_name, "status": "failed", "error": str(exc)}], "errors": [{"agent": node_name, "error": str(exc)}]}
+                    break
                 except Exception as exc:
                     execution.retry_count = attempt + 1
                     if attempt == settings.agent_max_retries:
@@ -143,16 +143,23 @@ async def _run_agent_node(node_name: str, function, state: InvestigationState, s
                 else:
                     merged_state[key] = value
             checkpoint = InvestigationCheckpoint(investigation_id=state["investigation_id"], node_name=node_name, state_json=merged_state)
-            investigation = await db.get(Investigation, state["investigation_id"])
-            if investigation:
-                investigation.state_json = merged_state
-                investigation.iteration_count += 1
+            await db.execute(
+                update(Investigation)
+                .where(Investigation.id == state["investigation_id"])
+                .values(iteration_count=Investigation.iteration_count + 1)
+            )
             db.add(checkpoint)
             await db.commit()
             return result
 
 
 async def _aggregate_node(state: InvestigationState) -> dict[str, Any]:
+    async with SessionLocal() as db:
+        investigation = await db.get(Investigation, state["investigation_id"])
+        if investigation:
+            investigation.state_json = dict(state)
+        db.add(InvestigationCheckpoint(investigation_id=state["investigation_id"], node_name="aggregate", state_json=dict(state)))
+        await db.commit()
     return {"status": "aggregated"}
 
 

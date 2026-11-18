@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.llm.service import LLMService
-from app.models.knowledge import KnowledgeChunk, KnowledgeDocument, KnowledgeJob, RepositoryConnection
+from app.models.knowledge import KnowledgeChunk, KnowledgeDocument, KnowledgeJob
 from app.services.text import chunk_text, content_hash
 
 

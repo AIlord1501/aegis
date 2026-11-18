@@ -1,9 +1,12 @@
+import asyncio
+from typing import Annotated
+
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile, status
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession, LLMDependency
 from app.db.session import SessionLocal
-from app.models.knowledge import KnowledgeDocument, KnowledgeJob
+from app.models.knowledge import KnowledgeJob
 from app.schemas.knowledge import KnowledgeJobRead, KnowledgeTextCreate, SearchRequest, SearchResult
 from app.services.knowledge import ingest_text, mark_job
 from app.services.search import search_chunks
@@ -23,13 +26,19 @@ async def ingest_text_document(payload: KnowledgeTextCreate, background_tasks: B
 
 
 @router.post("/documents/file", response_model=KnowledgeJobRead, status_code=status.HTTP_202_ACCEPTED)
-async def ingest_file_document(background_tasks: BackgroundTasks, current_user: CurrentUser, db: DbSession, file: UploadFile = File(...)) -> KnowledgeJob:
+async def ingest_file_document(background_tasks: BackgroundTasks, current_user: CurrentUser, db: DbSession, file: Annotated[UploadFile, File(...)]) -> KnowledgeJob:
     if not file.filename:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="A filename is required")
-    data = await file.read()
-    if len(data) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Knowledge file is too large")
-    content = parse_document(data, file.filename)
+    max_bytes = 5 * 1024 * 1024
+    chunks: list[bytes] = []
+    total_bytes = 0
+    while chunk := await file.read(65536):
+        total_bytes += len(chunk)
+        if total_bytes > max_bytes:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Knowledge file is too large")
+        chunks.append(chunk)
+    data = b"".join(chunks)
+    content = await asyncio.to_thread(parse_document, data, file.filename)
     job = KnowledgeJob(owner_id=current_user.id, job_type="document_ingest", source_uri=f"upload://{file.filename}", status="queued")
     db.add(job)
     await db.commit()

@@ -6,6 +6,7 @@ from sqlalchemy import select
 from app.api.deps import CurrentUser, DbSession
 from app.core.secrets import encrypt_secret
 from app.models.knowledge import KnowledgeJob, RepositoryConnection
+from app.models.service import Service
 from app.schemas.knowledge import KnowledgeJobRead
 from app.schemas.repository import RepositoryCreate, RepositoryRead
 from app.services.github import GitHubClient, GitHubError
@@ -31,6 +32,10 @@ def repository_client(repository: RepositoryConnection) -> GitHubClient:
 
 @router.post("", response_model=RepositoryRead, status_code=status.HTTP_201_CREATED)
 async def connect_repository(payload: RepositoryCreate, current_user: CurrentUser, db: DbSession) -> RepositoryConnection:
+    if payload.service_id is not None:
+        service = await db.scalar(select(Service).where(Service.id == payload.service_id, Service.owner_id == current_user.id))
+        if service is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Service not found")
     existing = await db.scalar(select(RepositoryConnection).where(RepositoryConnection.owner_id == current_user.id, RepositoryConnection.full_name == payload.full_name))
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Repository is already connected")

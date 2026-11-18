@@ -23,8 +23,22 @@ app.include_router(investigations.router)
 async def enforce_ingest_request_size(request: Request, call_next):
     if request.url.path == "/api/v1/events/ingest":
         content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > settings.event_max_request_bytes:
-            return JSONResponse(status_code=413, content={"detail": "Ingestion request is too large"})
+        if content_length is not None:
+            try:
+                parsed_length = int(content_length)
+            except ValueError:
+                return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header"})
+            if parsed_length > settings.event_max_request_bytes:
+                return JSONResponse(status_code=413, content={"detail": "Ingestion request is too large"})
+        else:
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > settings.event_max_request_bytes:
+                    return JSONResponse(status_code=413, content={"detail": "Ingestion request is too large"})
+                chunks.append(chunk)
+            request._body = b"".join(chunks)
     return await call_next(request)
 
 

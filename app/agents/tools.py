@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, TypeVar
 
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.secrets import decrypt_secret
@@ -15,7 +15,7 @@ from app.models.incident import Incident
 from app.models.investigation import ToolExecution
 from app.models.knowledge import RepositoryConnection
 from app.models.service import Service
-from app.services.github import GitHubClient, GitHubError
+from app.services.github import GitHubClient
 from app.services.search import search_chunks
 from app.schemas.knowledge import SearchRequest
 

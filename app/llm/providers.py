@@ -76,7 +76,10 @@ class OpenAICompatibleModel:
                     )
                     response.raise_for_status()
                     body = response.json()
-                    choice = body.get("choices", [{}])[0]
+                    choices = body.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        raise LLMError("Hosted model returned no choices", provider=self.provider, model=self.model)
+                    choice = choices[0]
                     usage_body = body.get("usage", {})
                     usage = ModelUsage(usage_body.get("prompt_tokens"), usage_body.get("completion_tokens"))
                     return ModelResult(_json_content(choice.get("message", {}).get("content"), provider=self.provider, model=self.model), self.provider, self.model, int((time.perf_counter() - started) * 1000), usage)
@@ -94,15 +97,24 @@ class OllamaEmbeddingModel:
         self.model = settings.embedding_model
         self.base_url = settings.ollama_base_url.rstrip("/")
         self.timeout = settings.llm_timeout_seconds
+        self.max_retries = settings.llm_max_retries
 
     async def embed(self, text: str) -> list[float]:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(f"{self.base_url}/api/embeddings", json={"model": self.model, "prompt": text})
-            response.raise_for_status()
-            embedding = response.json().get("embedding")
-        if not isinstance(embedding, list):
-            raise LLMError("Ollama returned no embedding", provider=self.provider, model=self.model)
-        return [float(item) for item in embedding]
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(f"{self.base_url}/api/embeddings", json={"model": self.model, "prompt": text})
+                    response.raise_for_status()
+                    embedding = response.json().get("embedding")
+                if not isinstance(embedding, list):
+                    raise LLMError("Ollama returned no embedding", provider=self.provider, model=self.model)
+                return [float(item) for item in embedding]
+            except (httpx.HTTPError, ValueError, LLMError) as exc:
+                last_error = exc
+                if attempt < self.max_retries:
+                    await asyncio.sleep(0.25 * (2**attempt))
+        raise LLMError(f"Ollama embedding request failed: {last_error}", provider=self.provider, model=self.model) from last_error
 
 
 class OpenAIEmbeddingModel:
@@ -115,12 +127,24 @@ class OpenAIEmbeddingModel:
         self.base_url = settings.llm_api_base_url.rstrip("/")
         self.api_key = settings.llm_api_key
         self.timeout = settings.llm_timeout_seconds
+        self.max_retries = settings.llm_max_retries
 
     async def embed(self, text: str) -> list[float]:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(f"{self.base_url}/embeddings", headers={"Authorization": f"Bearer {self.api_key}"}, json={"model": self.model, "input": text})
-            response.raise_for_status()
-            embedding = response.json().get("data", [{}])[0].get("embedding")
-        if not isinstance(embedding, list):
-            raise LLMError("Hosted provider returned no embedding", provider=self.provider, model=self.model)
-        return [float(item) for item in embedding]
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(f"{self.base_url}/embeddings", headers={"Authorization": f"Bearer {self.api_key}"}, json={"model": self.model, "input": text})
+                    response.raise_for_status()
+                    data = response.json().get("data")
+                if not isinstance(data, list) or not data:
+                    raise LLMError("Hosted provider returned no embedding data", provider=self.provider, model=self.model)
+                embedding = data[0].get("embedding")
+                if not isinstance(embedding, list):
+                    raise LLMError("Hosted provider returned no embedding", provider=self.provider, model=self.model)
+                return [float(item) for item in embedding]
+            except (httpx.HTTPError, ValueError, LLMError) as exc:
+                last_error = exc
+                if attempt < self.max_retries:
+                    await asyncio.sleep(0.25 * (2**attempt))
+        raise LLMError(f"Hosted embedding request failed: {last_error}", provider=self.provider, model=self.model) from last_error

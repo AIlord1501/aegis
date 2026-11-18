@@ -38,8 +38,6 @@ async def ingest_events(
     redis: RedisDependency,
     x_api_key: str | None = Header(default=None),
 ) -> IngestResponse:
-    if request.headers.get("content-length") and int(request.headers["content-length"]) > settings.event_max_request_bytes:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Ingestion request is too large")
     if len(payload.events) > settings.event_max_batch_size:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Event batch is too large")
     if not x_api_key:

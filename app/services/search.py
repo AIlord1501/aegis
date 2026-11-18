@@ -1,17 +1,21 @@
 from collections import defaultdict
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm.service import LLMService
+from app.llm.types import LLMError
 from app.models.knowledge import KnowledgeChunk, KnowledgeDocument
 from app.schemas.knowledge import SearchRequest, SearchResult
 
 
-def _conditions(request: SearchRequest, owner_id: int) -> tuple[list[Any], dict[str, Any]]:
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _conditions(request: SearchRequest, owner_id: int) -> list[Any]:
     conditions: list[Any] = [KnowledgeDocument.owner_id == owner_id]
-    params: dict[str, Any] = {"owner_id": owner_id}
     if request.service_id is not None:
         conditions.append(KnowledgeDocument.service_id == request.service_id)
     if request.repository_id is not None:
@@ -20,11 +24,11 @@ def _conditions(request: SearchRequest, owner_id: int) -> tuple[list[Any], dict[
         conditions.append(KnowledgeDocument.id == request.document_id)
     if request.incident_id is not None:
         conditions.append(KnowledgeDocument.incident_id == request.incident_id)
-    return conditions, params
+    return conditions
 
 
 async def search_chunks(db: AsyncSession, *, owner_id: int, request: SearchRequest, llm: LLMService) -> list[SearchResult]:
-    conditions, _ = _conditions(request, owner_id)
+    conditions = _conditions(request, owner_id)
     rankings: dict[int, dict[str, Any]] = defaultdict(dict)
     if db.bind is not None and db.bind.dialect.name == "postgresql":
         lexical_query = text("""
@@ -45,39 +49,47 @@ async def search_chunks(db: AsyncSession, *, owner_id: int, request: SearchReque
         for rank, row in enumerate((await db.execute(lexical_query, lexical_params)).mappings().all(), start=1):
             rankings[row["id"]].update(row=row, lexical_rank=rank, lexical_score=float(row["score"] or 0.0))
     else:
-        lexical_query = select(KnowledgeChunk, KnowledgeDocument).join(KnowledgeDocument).where(*conditions, KnowledgeChunk.content.ilike(f"%{request.query}%")).limit(request.top_k * 3)
+        tokens = [token for token in request.query.split() if token]
+        if tokens:
+            lexical_filter = or_(*(KnowledgeChunk.content.ilike(f"%{_escape_like(token)}%", escape="\\") for token in tokens))
+        else:
+            lexical_filter = KnowledgeChunk.content.ilike(f"%{_escape_like(request.query)}%", escape="\\")
+        lexical_query = select(KnowledgeChunk, KnowledgeDocument).join(KnowledgeDocument).where(*conditions, lexical_filter).limit(request.top_k * 3)
         for rank, (chunk, document) in enumerate((await db.execute(lexical_query)).all(), start=1):
             rankings[chunk.id].update(chunk=chunk, document=document, lexical_rank=rank, lexical_score=1.0 / rank)
 
     if db.bind is not None and db.bind.dialect.name == "postgresql":
-        vector = await llm.embed(request.query)
-        vector_literal = "[" + ",".join(str(value) for value in vector) + "]"
-        where = ["d.owner_id = :owner_id"]
-        params: dict[str, Any] = {"owner_id": owner_id, "embedding": vector_literal, "limit": request.top_k * 3}
-        if request.service_id is not None:
-            where.append("d.service_id = :service_id")
-            params["service_id"] = request.service_id
-        if request.repository_id is not None:
-            where.append("d.repository_id = :repository_id")
-            params["repository_id"] = request.repository_id
-        if request.document_id is not None:
-            where.append("d.id = :document_id")
-            params["document_id"] = request.document_id
-        if request.incident_id is not None:
-            where.append("d.incident_id = :incident_id")
-            params["incident_id"] = request.incident_id
-        semantic_query = text(f"""
-            SELECT c.id, c.document_id, c.chunk_index, c.content, c.metadata_json,
-                   d.title, d.source_type, d.source_uri,
-                   1 - (c.embedding <=> CAST(:embedding AS vector)) AS score
-            FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id
-            WHERE {' AND '.join(where)} AND c.embedding IS NOT NULL
-            ORDER BY c.embedding <=> CAST(:embedding AS vector)
-            LIMIT :limit
-        """)
-        for rank, row in enumerate((await db.execute(semantic_query, params)).mappings().all(), start=1):
-            entry = rankings[row["id"]]
-            entry.update(row=row, semantic_rank=rank, semantic_score=float(row["score"] or 0.0))
+        try:
+            vector = await llm.embed(request.query)
+            vector_literal = "[" + ",".join(str(value) for value in vector) + "]"
+            where = ["d.owner_id = :owner_id"]
+            params: dict[str, Any] = {"owner_id": owner_id, "embedding": vector_literal, "limit": request.top_k * 3}
+            if request.service_id is not None:
+                where.append("d.service_id = :service_id")
+                params["service_id"] = request.service_id
+            if request.repository_id is not None:
+                where.append("d.repository_id = :repository_id")
+                params["repository_id"] = request.repository_id
+            if request.document_id is not None:
+                where.append("d.id = :document_id")
+                params["document_id"] = request.document_id
+            if request.incident_id is not None:
+                where.append("d.incident_id = :incident_id")
+                params["incident_id"] = request.incident_id
+            semantic_query = text(f"""
+                SELECT c.id, c.document_id, c.chunk_index, c.content, c.metadata_json,
+                       d.title, d.source_type, d.source_uri,
+                       1 - (c.embedding <=> CAST(:embedding AS vector)) AS score
+                FROM knowledge_chunks c JOIN knowledge_documents d ON d.id = c.document_id
+                WHERE {' AND '.join(where)} AND c.embedding IS NOT NULL
+                ORDER BY c.embedding <=> CAST(:embedding AS vector)
+                LIMIT :limit
+            """)
+            for rank, row in enumerate((await db.execute(semantic_query, params)).mappings().all(), start=1):
+                entry = rankings[row["id"]]
+                entry.update(row=row, semantic_rank=rank, semantic_score=float(row["score"] or 0.0))
+        except LLMError:
+            pass
 
     results: list[tuple[float, dict[str, Any]]] = []
     for item in rankings.values():
